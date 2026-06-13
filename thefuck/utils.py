@@ -1,4 +1,5 @@
 import atexit
+import glob
 import os
 import pickle
 import re
@@ -216,12 +217,32 @@ class Cache(object):
         try:
             self._db = shelve.open(cache_path)
         except shelve_open_error + (ImportError,):
-            # Caused when switching between Python versions
+            # Caused when switching between Python versions or when the
+            # underlying dbm backend changes.  shelve/dbm may create several
+            # sidecar files (.db, .dir, .dat, .bak, .pag) alongside (or
+            # instead of) the base path, so we must remove the whole group
+            # before re-creating the database.
             warn("Removing possibly out-dated cache")
-            os.remove(cache_path)
+            self._remove_cache_files(cache_path)
             self._db = shelve.open(cache_path)
 
         atexit.register(self._db.close)
+
+    @staticmethod
+    def _remove_cache_files(cache_path):
+        """Remove *cache_path* and every dbm sidecar file that shares its prefix.
+
+        Different dbm backends (gdbm, ndbm, dumb) create different sets of
+        files — e.g. ``thefuck.db``, or ``thefuck.dir`` + ``thefuck.dat``, or
+        ``thefuck.dat`` + ``thefuck.bak`` + ``thefuck.dir``.  Using a glob on
+        the base path ensures we clean up all of them regardless of which
+        backend was previously in use.
+        """
+        for path in glob.glob(cache_path + '*'):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def _get_cache_dir(self):
         default_xdg_cache_dir = os.path.expanduser("~/.cache")

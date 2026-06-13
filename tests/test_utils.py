@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import dbm
 import pytest
 import warnings
 from mock import Mock, call, patch
@@ -232,6 +233,74 @@ class TestCache(object):
         shelve.update({key: {'etag': '-1', 'value': 'old-value'}})
         assert fn() == 'test'
         assert shelve == {key: {'etag': '0', 'value': 'test'}}
+
+    def test_sidecar_files_cleaned_when_base_missing(self, mocker, tmp_path, shelve):
+        """Base file absent but sidecar files present → all sidecars removed, retry succeeds."""
+        base = str(tmp_path / 'thefuck')
+        for ext in ['.db', '.dir', '.dat', '.bak', '.pag']:
+            (tmp_path / ('thefuck' + ext)).write_text('stale data')
+
+        mocker.patch.object(_cache, '_get_cache_dir', return_value=str(tmp_path))
+        _cache._db = None
+
+        mock_shelve = mocker.MagicMock()
+        mock_shelve.get.return_value = None
+        mock_open = mocker.patch(
+            'thefuck.utils.shelve.open',
+            side_effect=[dbm.error[0]('corrupt'), mock_shelve],
+        )
+
+        _cache._setup_db()
+
+        for ext in ['.db', '.dir', '.dat', '.bak', '.pag']:
+            assert not (tmp_path / ('thefuck' + ext)).exists()
+        assert mock_open.call_count == 2
+        assert _cache._db is mock_shelve
+
+    def test_cache_rebuilt_after_cleanup(self, mocker, tmp_path, shelve):
+        """After cleaning corrupted cache files, the rebuilt cache is functional."""
+        base = str(tmp_path / 'thefuck')
+        (tmp_path / 'thefuck.db').write_text('corrupt')
+        (tmp_path / 'thefuck.dir').write_text('corrupt')
+
+        mocker.patch.object(_cache, '_get_cache_dir', return_value=str(tmp_path))
+        _cache._db = None
+
+        mock_shelve = mocker.MagicMock()
+        mock_shelve.get.return_value = None
+        mock_open = mocker.patch(
+            'thefuck.utils.shelve.open',
+            side_effect=[dbm.error[0]('corrupt'), mock_shelve],
+        )
+
+        _cache._setup_db()
+
+        # Rebuilt cache supports normal operations
+        _cache._db['test_key'] = {'etag': '0', 'value': 'rebuilt'}
+        mock_shelve.__setitem__.assert_called_with('test_key', {'etag': '0', 'value': 'rebuilt'})
+        assert not (tmp_path / 'thefuck.db').exists()
+        assert not (tmp_path / 'thefuck.dir').exists()
+
+    def test_healthy_cache_not_removed(self, mocker, tmp_path, shelve):
+        """When shelve.open succeeds on first try, no cache files are touched."""
+        (tmp_path / 'thefuck').write_text('valid cache')
+        (tmp_path / 'thefuck.db').write_text('valid sidecar')
+
+        mocker.patch.object(_cache, '_get_cache_dir', return_value=str(tmp_path))
+        _cache._db = None
+
+        mock_shelve = mocker.MagicMock()
+        mock_shelve.get.return_value = None
+        mock_open = mocker.patch(
+            'thefuck.utils.shelve.open',
+            return_value=mock_shelve,
+        )
+
+        _cache._setup_db()
+
+        assert mock_open.call_count == 1
+        assert (tmp_path / 'thefuck').exists()
+        assert (tmp_path / 'thefuck.db').exists()
 
 
 class TestGetValidHistoryWithoutCurrent(object):
