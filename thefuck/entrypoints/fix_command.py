@@ -20,6 +20,11 @@ def _get_raw_command(known_args):
         alias = get_alias()
         executables = get_all_executables()
         for command in history:
+            # Skip blank/whitespace-only entries (e.g. a trailing newline in
+            # TF_HISTORY); they are not real commands and an empty string would
+            # otherwise look "different enough" from the alias and be returned.
+            if not command.strip():
+                continue
             diff = SequenceMatcher(a=alias, b=command).ratio()
             if diff < const.DIFF_WITH_ALIAS or command in executables:
                 return [command]
