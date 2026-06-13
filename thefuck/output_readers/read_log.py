@@ -64,10 +64,20 @@ def _get_output_lines(script, log_file):
     return screen.display
 
 
-def _skip_old_lines(log_file):
+def _skip_old_lines(log_file, mmap_offset):
+    """Seek past content that precedes the last ``LOG_SIZE_IN_BYTES``.
+
+    *mmap_offset* is the file-level offset at which the mmap region
+    begins.  When the file is larger than the log window the mmap is
+    anchored to a granularity-aligned boundary that may be slightly
+    before the true tail boundary; we skip those extra leading bytes
+    here so callers always see at most ``LOG_SIZE_IN_BYTES`` of the
+    most recent content.
+
+    """
     size = os.path.getsize(os.environ['THEFUCK_OUTPUT_LOG'])
     if size > const.LOG_SIZE_IN_BYTES:
-        log_file.seek(size - const.LOG_SIZE_IN_BYTES)
+        log_file.seek(size - const.LOG_SIZE_IN_BYTES - mmap_offset)
 
 
 def get_output(script):
@@ -94,8 +104,22 @@ def get_output(script):
     try:
         with logs.debug_time(u'Read output from log'):
             fd = os.open(os.environ['THEFUCK_OUTPUT_LOG'], os.O_RDONLY)
-            buffer = mmap.mmap(fd, const.LOG_SIZE_IN_BYTES, mmap.MAP_SHARED, mmap.PROT_READ)
-            _skip_old_lines(buffer)
+            file_size = os.fstat(fd).st_size
+            if file_size == 0:
+                logs.warn("Output log is empty")
+                return None
+            # Map at most LOG_SIZE_IN_BYTES from the *end* of the file.
+            # mmap requires the offset to be a multiple of
+            # ALLOCATIONGRANULARITY, so we round down and let
+            # _skip_old_lines trim the extra leading bytes.
+            tail_start = max(0, file_size - const.LOG_SIZE_IN_BYTES)
+            gran = mmap.ALLOCATIONGRANULARITY
+            mmap_offset = (tail_start // gran) * gran
+            length = file_size - mmap_offset
+            buffer = mmap.mmap(
+                fd, length, mmap.MAP_SHARED, mmap.PROT_READ,
+                offset=mmap_offset)
+            _skip_old_lines(buffer, mmap_offset)
             lines = _get_output_lines(script, buffer)
             output = '\n'.join(lines).strip()
             logs.debug(u'Received output: {}'.format(output))
