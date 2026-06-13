@@ -19,7 +19,10 @@ def _get_raw_command(known_args):
         history = os.environ['TF_HISTORY'].split('\n')[::-1]
         alias = get_alias()
         executables = get_all_executables()
-        for command in history:
+        for raw_line in history:
+            command = raw_line.strip()
+            if not command:
+                continue
             diff = SequenceMatcher(a=alias, b=command).ratio()
             if diff < const.DIFF_WITH_ALIAS or command in executables:
                 return [command]
