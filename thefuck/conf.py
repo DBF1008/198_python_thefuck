@@ -5,6 +5,23 @@ from six import text_type
 from . import const
 from .system import Path
 
+# Index constants matching const.SETTINGS_SCHEMA tuple layout
+_ATTR = const._ATTR
+_DEFAULT = const._DEFAULT
+_ENV_VAR = const._ENV_VAR
+_COERCE = const._COERCE
+_ARG_ATTR = const._ARG_ATTR
+_ARG_XFORM = const._ARG_XFORM
+
+# Pre-built lookup tables for O(1) access from hot paths
+_SCHEMA_BY_ENV = {entry[_ENV_VAR]: entry
+                  for entry in const.SETTINGS_SCHEMA
+                  if entry[_ENV_VAR] is not None}
+
+_SCHEMA_BY_ARG = {entry[_ARG_ATTR]: entry
+                  for entry in const.SETTINGS_SCHEMA
+                  if entry[_ARG_ATTR] is not None}
+
 try:
     import importlib.util
 
@@ -82,39 +99,13 @@ class Settings(dict):
                 for key in const.DEFAULT_SETTINGS.keys()
                 if hasattr(settings, key)}
 
-    def _rules_from_env(self, val):
-        """Transforms rules list from env-string to python."""
-        val = val.split(':')
-        if 'DEFAULT_RULES' in val:
-            val = const.DEFAULT_RULES + [rule for rule in val if rule != 'DEFAULT_RULES']
-        return val
-
-    def _priority_from_env(self, val):
-        """Gets priority pairs from env."""
-        for part in val.split(':'):
-            try:
-                rule, priority = part.split('=')
-                yield rule, int(priority)
-            except ValueError:
-                continue
-
     def _val_from_env(self, env, attr):
-        """Transforms env-strings to python."""
+        """Transforms an env-string to its Python value using the schema."""
         val = os.environ[env]
-        if attr in ('rules', 'exclude_rules'):
-            return self._rules_from_env(val)
-        elif attr == 'priority':
-            return dict(self._priority_from_env(val))
-        elif attr in ('wait_command', 'history_limit', 'wait_slow_command',
-                      'num_close_matches'):
-            return int(val)
-        elif attr in ('require_confirmation', 'no_colors', 'debug',
-                      'alter_history', 'instant_mode'):
-            return val.lower() == 'true'
-        elif attr in ('slow_commands', 'excluded_search_path_prefixes'):
-            return val.split(':')
-        else:
-            return val
+        entry = _SCHEMA_BY_ENV.get(env)
+        if entry and entry[_COERCE] is not None:
+            return entry[_COERCE](val)
+        return val
 
     def _settings_from_env(self):
         """Loads settings from env."""
@@ -123,17 +114,17 @@ class Settings(dict):
                 if env in os.environ}
 
     def _settings_from_args(self, args):
-        """Loads settings from args."""
+        """Loads settings from args using the schema's arg mappings."""
         if not args:
             return {}
 
         from_args = {}
-        if args.yes:
-            from_args['require_confirmation'] = not args.yes
-        if args.debug:
-            from_args['debug'] = args.debug
-        if args.repeat:
-            from_args['repeat'] = args.repeat
+        for arg_attr, entry in _SCHEMA_BY_ARG.items():
+            setting_name = entry[_ATTR]
+            transform = entry[_ARG_XFORM]
+            val = getattr(args, arg_attr, None)
+            if val:
+                from_args[setting_name] = transform(val) if transform else val
         return from_args
 
 

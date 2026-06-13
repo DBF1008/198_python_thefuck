@@ -28,39 +28,157 @@ ALL_ENABLED = _GenConst('All rules enabled')
 DEFAULT_RULES = [ALL_ENABLED]
 DEFAULT_PRIORITY = 1000
 
-DEFAULT_SETTINGS = {'rules': DEFAULT_RULES,
-                    'exclude_rules': [],
-                    'wait_command': 3,
-                    'require_confirmation': True,
-                    'no_colors': False,
-                    'debug': False,
-                    'priority': {},
-                    'history_limit': None,
-                    'alter_history': True,
-                    'wait_slow_command': 15,
-                    'slow_commands': ['lein', 'react-native', 'gradle',
-                                      './gradlew', 'vagrant'],
-                    'repeat': False,
-                    'instant_mode': False,
-                    'num_close_matches': 3,
-                    'env': {'LC_ALL': 'C', 'LANG': 'C', 'GIT_TRACE': '1'},
-                    'excluded_search_path_prefixes': []}
 
-ENV_TO_ATTR = {'THEFUCK_RULES': 'rules',
-               'THEFUCK_EXCLUDE_RULES': 'exclude_rules',
-               'THEFUCK_WAIT_COMMAND': 'wait_command',
-               'THEFUCK_REQUIRE_CONFIRMATION': 'require_confirmation',
-               'THEFUCK_NO_COLORS': 'no_colors',
-               'THEFUCK_DEBUG': 'debug',
-               'THEFUCK_PRIORITY': 'priority',
-               'THEFUCK_HISTORY_LIMIT': 'history_limit',
-               'THEFUCK_ALTER_HISTORY': 'alter_history',
-               'THEFUCK_WAIT_SLOW_COMMAND': 'wait_slow_command',
-               'THEFUCK_SLOW_COMMANDS': 'slow_commands',
-               'THEFUCK_REPEAT': 'repeat',
-               'THEFUCK_INSTANT_MODE': 'instant_mode',
-               'THEFUCK_NUM_CLOSE_MATCHES': 'num_close_matches',
-               'THEFUCK_EXCLUDED_SEARCH_PATH_PREFIXES': 'excluded_search_path_prefixes'}
+# ---------------------------------------------------------------------------
+# Env-string coercion functions
+#
+# Each function takes a raw environment-variable string and returns the
+# Python value that should be stored in the settings dict.  They are
+# referenced by SETTINGS_SCHEMA below and called by conf.Settings when
+# loading settings from the environment.
+# ---------------------------------------------------------------------------
+
+def _coerce_bool(val):
+    """Coerce env string to bool.  Only 'true' (case-insensitive) → True."""
+    return val.lower() == 'true'
+
+
+def _coerce_int(val):
+    """Coerce env string to int."""
+    return int(val)
+
+
+def _coerce_list(val):
+    """Coerce colon-separated env string to list of strings."""
+    return val.split(':')
+
+
+def _coerce_rules_list(val):
+    """Coerce colon-separated rules list, expanding DEFAULT_RULES token."""
+    parts = val.split(':')
+    if 'DEFAULT_RULES' in parts:
+        parts = DEFAULT_RULES + [r for r in parts if r != 'DEFAULT_RULES']
+    return parts
+
+
+def _coerce_priority_dict(val):
+    """Coerce 'key=val:key=val' env string to {str: int} dict.
+
+    Malformed entries (missing '=' or non-integer value) are silently
+    skipped.
+    """
+    result = {}
+    for part in val.split(':'):
+        try:
+            rule, priority = part.split('=')
+            result[rule] = int(priority)
+        except ValueError:
+            continue
+    return result
+
+
+def _coerce_identity(val):
+    """Return raw string unchanged (for settings with no special coercion)."""
+    return val
+
+
+# ---------------------------------------------------------------------------
+# Declarative settings schema
+#
+# Single source of truth for every built-in setting.  DEFAULT_SETTINGS
+# and ENV_TO_ATTR are *derived* from this list so adding a new setting
+# only requires adding one entry here.
+#
+# Each entry is a 6-tuple:
+#   (attr_name,        # str – key in the settings dict
+#    default_value,    # any  – value used when no override is present
+#    env_var,          # str | None – THEFUCK_* env var name
+#    coerce_from_env,  # callable | None – converts env string → Python
+#    arg_attr,         # str | None – argparse attribute name
+#    arg_transform)    # callable | None – converts arg value → setting
+#
+# Index helper constants (for readability):
+_ATTR = 0
+_DEFAULT = 1
+_ENV_VAR = 2
+_COERCE = 3
+_ARG_ATTR = 4
+_ARG_XFORM = 5
+
+SETTINGS_SCHEMA = [
+    ('rules', DEFAULT_RULES,
+     'THEFUCK_RULES', _coerce_rules_list,
+     None, None),
+
+    ('exclude_rules', [],
+     'THEFUCK_EXCLUDE_RULES', _coerce_rules_list,
+     None, None),
+
+    ('wait_command', 3,
+     'THEFUCK_WAIT_COMMAND', _coerce_int,
+     None, None),
+
+    ('require_confirmation', True,
+     'THEFUCK_REQUIRE_CONFIRMATION', _coerce_bool,
+     'yes', lambda v: not v),
+
+    ('no_colors', False,
+     'THEFUCK_NO_COLORS', _coerce_bool,
+     None, None),
+
+    ('debug', False,
+     'THEFUCK_DEBUG', _coerce_bool,
+     'debug', None),
+
+    ('priority', {},
+     'THEFUCK_PRIORITY', _coerce_priority_dict,
+     None, None),
+
+    ('history_limit', None,
+     'THEFUCK_HISTORY_LIMIT', _coerce_int,
+     None, None),
+
+    ('alter_history', True,
+     'THEFUCK_ALTER_HISTORY', _coerce_bool,
+     None, None),
+
+    ('wait_slow_command', 15,
+     'THEFUCK_WAIT_SLOW_COMMAND', _coerce_int,
+     None, None),
+
+    ('slow_commands', ['lein', 'react-native', 'gradle',
+                       './gradlew', 'vagrant'],
+     'THEFUCK_SLOW_COMMANDS', _coerce_list,
+     None, None),
+
+    ('repeat', False,
+     'THEFUCK_REPEAT', _coerce_bool,
+     'repeat', None),
+
+    ('instant_mode', False,
+     'THEFUCK_INSTANT_MODE', _coerce_bool,
+     None, None),
+
+    ('num_close_matches', 3,
+     'THEFUCK_NUM_CLOSE_MATCHES', _coerce_int,
+     None, None),
+
+    ('env', {'LC_ALL': 'C', 'LANG': 'C', 'GIT_TRACE': '1'},
+     None, None,
+     None, None),
+
+    ('excluded_search_path_prefixes', [],
+     'THEFUCK_EXCLUDED_SEARCH_PATH_PREFIXES', _coerce_list,
+     None, None),
+]
+
+
+# Derived structures — do NOT edit these directly; update SETTINGS_SCHEMA.
+DEFAULT_SETTINGS = {entry[_ATTR]: entry[_DEFAULT] for entry in SETTINGS_SCHEMA}
+
+ENV_TO_ATTR = {entry[_ENV_VAR]: entry[_ATTR]
+               for entry in SETTINGS_SCHEMA
+               if entry[_ENV_VAR] is not None}
 
 SETTINGS_HEADER = u"""# The Fuck settings file
 #
