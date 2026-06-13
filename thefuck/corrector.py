@@ -1,4 +1,5 @@
 import sys
+from collections import OrderedDict
 from .conf import settings
 from .types import Rule
 from .system import Path
@@ -20,32 +21,60 @@ def get_loaded_rules(rules_paths):
 
 
 def get_rules_import_paths():
-    """Yields all rules import paths.
+    """Yields rules import paths, lowest precedence first.
+
+    Bundled rules come first, then third-party contrib packages, and finally
+    the user's own rules directory. Later paths override earlier ones by rule
+    name (see `get_rule_paths`), so user rules override contrib and bundled
+    rules, and contrib rules override bundled ones.
 
     :rtype: Iterable[Path]
 
     """
     # Bundled rules:
     yield Path(__file__).parent.joinpath('rules')
-    # Rules defined by user:
-    yield settings.user_dir.joinpath('rules')
     # Packages with third-party rules:
     for path in sys.path:
         for contrib_module in Path(path).glob('thefuck_contrib_*'):
             contrib_rules = contrib_module.joinpath('rules')
             if contrib_rules.is_dir():
                 yield contrib_rules
+    # Rules defined by user (override bundled and contrib rules):
+    yield settings.user_dir.joinpath('rules')
+
+
+def get_rule_paths():
+    """Returns deduplicated paths to rule modules.
+
+    Rules are collected from each import path (lowest precedence first). When
+    the same rule name appears in more than one source, the later (higher
+    precedence) source wins, so user rules override contrib and bundled rules.
+    Only the winning module for a given name is returned, so shadowed modules
+    are never imported.
+
+    :rtype: [Path]
+
+    """
+    registry = OrderedDict()  # rule name -> Path, last writer wins
+    for import_path in get_rules_import_paths():
+        for rule_path in sorted(import_path.glob('*.py')):
+            if rule_path.name == '__init__.py':
+                continue
+            name = rule_path.name[:-3]
+            if name in registry:
+                logs.debug(u'Rule {} from {} overrides {}'.format(
+                    name, rule_path, registry[name]))
+            registry[name] = rule_path
+    return list(registry.values())
 
 
 def get_rules():
-    """Returns all enabled rules.
+    """Returns all enabled rules, deduplicated by name.
 
     :rtype: [Rule]
 
     """
-    paths = [rule_path for path in get_rules_import_paths()
-             for rule_path in sorted(path.glob('*.py'))]
-    return sorted(get_loaded_rules(paths),
+    return sorted(get_loaded_rules(get_rule_paths()),
                   key=lambda rule: rule.priority)
 
 
