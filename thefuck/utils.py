@@ -216,12 +216,37 @@ class Cache(object):
         try:
             self._db = shelve.open(cache_path)
         except shelve_open_error + (ImportError,):
-            # Caused when switching between Python versions
+            # Caused when switching between Python versions or dbm backends.
+            # A single shelve database may be persisted across several
+            # sidecar files (``thefuck``, ``thefuck.db``,
+            # ``thefuck.dir``/``.dat``/``.bak``, ...) and on some platforms
+            # the base path itself never exists, so the whole group has to be
+            # removed before the cache can be rebuilt.
             warn("Removing possibly out-dated cache")
-            os.remove(cache_path)
+            self._remove_db(cache_path)
             self._db = shelve.open(cache_path)
 
         atexit.register(self._db.close)
+
+    def _remove_db(self, cache_path):
+        """Removes the cache database together with its backend sidecar files.
+
+        ``shelve``/``dbm`` may store a single logical database across several
+        files whose names share the ``cache_path`` base name (for example
+        ``thefuck``, ``thefuck.db``, ``thefuck.dir``/``.dat``/``.bak``).
+        Depending on the platform and backend the base path itself may not
+        even exist. Removing only every matching file lets a corrupted or
+        out-of-date cache be rebuilt cleanly without touching unrelated files.
+        """
+        cache_dir, cache_name = os.path.split(cache_path)
+        for name in os.listdir(cache_dir):
+            if name == cache_name or name.startswith(cache_name + '.'):
+                try:
+                    os.remove(os.path.join(cache_dir, name))
+                except OSError:
+                    # The file may have been removed concurrently or be the
+                    # base path that does not exist for this backend.
+                    pass
 
     def _get_cache_dir(self):
         default_xdg_cache_dir = os.path.expanduser("~/.cache")

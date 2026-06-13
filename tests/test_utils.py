@@ -1,13 +1,24 @@
 # -*- coding: utf-8 -*-
 
+import os
 import pytest
 import warnings
 from mock import Mock, call, patch
 from thefuck.utils import default_settings, \
     memoize, get_closest, get_all_executables, replace_argument, \
     get_all_matched_commands, is_app, for_app, cache, \
-    get_valid_history_without_current, _cache, get_close_matches
+    get_valid_history_without_current, _cache, get_close_matches, \
+    Cache, shelve_open_error
 from thefuck.types import Command
+
+
+def _make_shelve_open_error():
+    """Builds an error of the type ``shelve.open`` raises on a corrupted or
+    incompatible database, so the cache recovery path can be exercised."""
+    error = shelve_open_error
+    if isinstance(error, tuple):
+        error = error[0]
+    return error('corrupted cache')
 
 
 @pytest.mark.parametrize('override, old, new', [
@@ -232,6 +243,83 @@ class TestCache(object):
         shelve.update({key: {'etag': '-1', 'value': 'old-value'}})
         assert fn() == 'test'
         assert shelve == {key: {'etag': '0', 'value': 'test'}}
+
+
+class TestCacheSetupDb(object):
+    @pytest.fixture(autouse=True)
+    def no_atexit(self, mocker):
+        # Avoid registering real ``close`` handlers while testing.
+        return mocker.patch('thefuck.utils.atexit.register')
+
+    @pytest.fixture
+    def cache_dir(self, tmpdir, mocker):
+        path = str(tmpdir)
+        mocker.patch('thefuck.utils.Cache._get_cache_dir', return_value=path)
+        return path
+
+    def _make_file(self, cache_dir, name):
+        path = os.path.join(cache_dir, name)
+        with open(path, 'w') as f:
+            f.write('')
+        return path
+
+    def test_setup_db_removes_sidecar_files_when_base_missing(
+            self, cache_dir, mocker):
+        # The bare ``thefuck`` base path does not exist, only the backend
+        # sidecar files do (as happens with several dbm backends).
+        sidecars = [self._make_file(cache_dir, name)
+                    for name in ('thefuck.db', 'thefuck.dir', 'thefuck.dat')]
+        unrelated = self._make_file(cache_dir, 'unrelated.txt')
+
+        db = mocker.Mock(name='db')
+        open_mock = mocker.patch(
+            'thefuck.utils.shelve.open',
+            side_effect=[_make_shelve_open_error(), db])
+
+        cache = Cache()
+        cache._setup_db()
+
+        # The corrupted cache is cleaned up and successfully rebuilt.
+        assert cache._db is db
+        assert open_mock.call_count == 2
+        for path in sidecars:
+            assert not os.path.exists(path)
+        # Unrelated files in the cache directory must be left untouched.
+        assert os.path.exists(unrelated)
+
+    def test_setup_db_rebuilds_cache_after_cleanup(self, cache_dir, mocker):
+        # Both the base path and its sidecar files exist but are corrupted.
+        files = [self._make_file(cache_dir, name)
+                 for name in ('thefuck', 'thefuck.db', 'thefuck.bak')]
+
+        db = mocker.Mock(name='db')
+        open_mock = mocker.patch(
+            'thefuck.utils.shelve.open',
+            side_effect=[_make_shelve_open_error(), db])
+
+        cache = Cache()
+        cache._setup_db()
+
+        assert cache._db is db
+        assert open_mock.call_count == 2
+        for path in files:
+            assert not os.path.exists(path)
+
+    def test_setup_db_keeps_valid_cache(self, cache_dir, mocker):
+        # A healthy cache must never be removed.
+        existing = self._make_file(cache_dir, 'thefuck.db')
+
+        db = mocker.Mock(name='db')
+        open_mock = mocker.patch('thefuck.utils.shelve.open', return_value=db)
+        remove_mock = mocker.patch('thefuck.utils.os.remove')
+
+        cache = Cache()
+        cache._setup_db()
+
+        assert cache._db is db
+        assert open_mock.call_count == 1
+        remove_mock.assert_not_called()
+        assert os.path.exists(existing)
 
 
 class TestGetValidHistoryWithoutCurrent(object):
