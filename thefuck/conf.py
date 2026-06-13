@@ -82,39 +82,13 @@ class Settings(dict):
                 for key in const.DEFAULT_SETTINGS.keys()
                 if hasattr(settings, key)}
 
-    def _rules_from_env(self, val):
-        """Transforms rules list from env-string to python."""
-        val = val.split(':')
-        if 'DEFAULT_RULES' in val:
-            val = const.DEFAULT_RULES + [rule for rule in val if rule != 'DEFAULT_RULES']
-        return val
-
-    def _priority_from_env(self, val):
-        """Gets priority pairs from env."""
-        for part in val.split(':'):
-            try:
-                rule, priority = part.split('=')
-                yield rule, int(priority)
-            except ValueError:
-                continue
-
     def _val_from_env(self, env, attr):
-        """Transforms env-strings to python."""
-        val = os.environ[env]
-        if attr in ('rules', 'exclude_rules'):
-            return self._rules_from_env(val)
-        elif attr == 'priority':
-            return dict(self._priority_from_env(val))
-        elif attr in ('wait_command', 'history_limit', 'wait_slow_command',
-                      'num_close_matches'):
-            return int(val)
-        elif attr in ('require_confirmation', 'no_colors', 'debug',
-                      'alter_history', 'instant_mode'):
-            return val.lower() == 'true'
-        elif attr in ('slow_commands', 'excluded_search_path_prefixes'):
-            return val.split(':')
-        else:
-            return val
+        """Transforms an env-string to python via the settings schema.
+
+        The per-setting coercion lives in ``const.SETTINGS_SCHEMA`` so that
+        file/env/args stay in sync; see ``const._Setting``.
+        """
+        return const.SETTING_BY_ATTR[attr].from_env(os.environ[env])
 
     def _settings_from_env(self):
         """Loads settings from env."""

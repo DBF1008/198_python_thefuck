@@ -1,4 +1,5 @@
 # -*- encoding: utf-8 -*-
+from collections import namedtuple
 
 
 class _GenConst(object):
@@ -28,39 +29,100 @@ ALL_ENABLED = _GenConst('All rules enabled')
 DEFAULT_RULES = [ALL_ENABLED]
 DEFAULT_PRIORITY = 1000
 
-DEFAULT_SETTINGS = {'rules': DEFAULT_RULES,
-                    'exclude_rules': [],
-                    'wait_command': 3,
-                    'require_confirmation': True,
-                    'no_colors': False,
-                    'debug': False,
-                    'priority': {},
-                    'history_limit': None,
-                    'alter_history': True,
-                    'wait_slow_command': 15,
-                    'slow_commands': ['lein', 'react-native', 'gradle',
-                                      './gradlew', 'vagrant'],
-                    'repeat': False,
-                    'instant_mode': False,
-                    'num_close_matches': 3,
-                    'env': {'LC_ALL': 'C', 'LANG': 'C', 'GIT_TRACE': '1'},
-                    'excluded_search_path_prefixes': []}
+# Env-string coercions. Each turns a raw ``THEFUCK_*`` environment value into
+# the Python type the corresponding setting expects. They are the single place
+# where env parsing rules live; settings reference them from ``SETTINGS_SCHEMA``.
+def _env_to_bool(val):
+    """Parses a boolean env-string (``'true'`` is True, case-insensitive)."""
+    return val.lower() == 'true'
 
-ENV_TO_ATTR = {'THEFUCK_RULES': 'rules',
-               'THEFUCK_EXCLUDE_RULES': 'exclude_rules',
-               'THEFUCK_WAIT_COMMAND': 'wait_command',
-               'THEFUCK_REQUIRE_CONFIRMATION': 'require_confirmation',
-               'THEFUCK_NO_COLORS': 'no_colors',
-               'THEFUCK_DEBUG': 'debug',
-               'THEFUCK_PRIORITY': 'priority',
-               'THEFUCK_HISTORY_LIMIT': 'history_limit',
-               'THEFUCK_ALTER_HISTORY': 'alter_history',
-               'THEFUCK_WAIT_SLOW_COMMAND': 'wait_slow_command',
-               'THEFUCK_SLOW_COMMANDS': 'slow_commands',
-               'THEFUCK_REPEAT': 'repeat',
-               'THEFUCK_INSTANT_MODE': 'instant_mode',
-               'THEFUCK_NUM_CLOSE_MATCHES': 'num_close_matches',
-               'THEFUCK_EXCLUDED_SEARCH_PATH_PREFIXES': 'excluded_search_path_prefixes'}
+
+def _env_to_int(val):
+    """Parses an integer env-string."""
+    return int(val)
+
+
+def _env_to_list(val):
+    """Parses a colon-separated env-string into a list."""
+    return val.split(':')
+
+
+def _env_to_rules(val):
+    """Parses a colon-separated rules env-string, expanding ``DEFAULT_RULES``."""
+    rules = val.split(':')
+    if 'DEFAULT_RULES' in rules:
+        rules = DEFAULT_RULES + [rule for rule in rules
+                                 if rule != 'DEFAULT_RULES']
+    return rules
+
+
+def _env_to_priority(val):
+    """Parses a colon-separated ``rule=priority`` env-string into a dict.
+
+    Malformed pairs (missing ``=`` or a non-integer priority) are skipped.
+    """
+    priority = {}
+    for part in val.split(':'):
+        try:
+            rule, value = part.split('=')
+            priority[rule] = int(value)
+        except ValueError:
+            continue
+    return priority
+
+
+def _env_to_str(val):
+    """Returns the env-string unchanged.
+
+    Used only for ``repeat``: it has long been mapped in the environment but was
+    never coerced, so ``THEFUCK_REPEAT`` yields the raw string (the file and CLI
+    args still provide a real bool). Kept as-is to avoid changing public config
+    semantics.
+    """
+    return val
+
+
+# Declarative settings schema -- the single source of truth for every setting.
+# Each row fully describes a setting; ``DEFAULT_SETTINGS``, ``ENV_TO_ATTR`` and
+# ``SETTING_BY_ATTR`` below are derived from it, so adding a setting (or its env
+# var / coercion) is a one-line change that stays in sync across file/env/args.
+#
+#   attr     -- the ``settings`` attribute name
+#   env      -- the ``THEFUCK_*`` environment variable, or None for file-only
+#   default  -- the default value (used for file/default loading)
+#   from_env -- callable turning the env-string into the attr's type,
+#               or None for file-only settings
+_Setting = namedtuple('_Setting', ('attr', 'env', 'default', 'from_env'))
+
+SETTINGS_SCHEMA = [
+    _Setting('rules', 'THEFUCK_RULES', DEFAULT_RULES, _env_to_rules),
+    _Setting('exclude_rules', 'THEFUCK_EXCLUDE_RULES', [], _env_to_rules),
+    _Setting('wait_command', 'THEFUCK_WAIT_COMMAND', 3, _env_to_int),
+    _Setting('require_confirmation', 'THEFUCK_REQUIRE_CONFIRMATION', True,
+             _env_to_bool),
+    _Setting('no_colors', 'THEFUCK_NO_COLORS', False, _env_to_bool),
+    _Setting('debug', 'THEFUCK_DEBUG', False, _env_to_bool),
+    _Setting('priority', 'THEFUCK_PRIORITY', {}, _env_to_priority),
+    _Setting('history_limit', 'THEFUCK_HISTORY_LIMIT', None, _env_to_int),
+    _Setting('alter_history', 'THEFUCK_ALTER_HISTORY', True, _env_to_bool),
+    _Setting('wait_slow_command', 'THEFUCK_WAIT_SLOW_COMMAND', 15, _env_to_int),
+    _Setting('slow_commands', 'THEFUCK_SLOW_COMMANDS',
+             ['lein', 'react-native', 'gradle', './gradlew', 'vagrant'],
+             _env_to_list),
+    _Setting('repeat', 'THEFUCK_REPEAT', False, _env_to_str),
+    _Setting('instant_mode', 'THEFUCK_INSTANT_MODE', False, _env_to_bool),
+    _Setting('num_close_matches', 'THEFUCK_NUM_CLOSE_MATCHES', 3, _env_to_int),
+    _Setting('env', None, {'LC_ALL': 'C', 'LANG': 'C', 'GIT_TRACE': '1'}, None),
+    _Setting('excluded_search_path_prefixes',
+             'THEFUCK_EXCLUDED_SEARCH_PATH_PREFIXES', [], _env_to_list),
+]
+
+DEFAULT_SETTINGS = {setting.attr: setting.default for setting in SETTINGS_SCHEMA}
+
+ENV_TO_ATTR = {setting.env: setting.attr
+               for setting in SETTINGS_SCHEMA if setting.env}
+
+SETTING_BY_ATTR = {setting.attr: setting for setting in SETTINGS_SCHEMA}
 
 SETTINGS_HEADER = u"""# The Fuck settings file
 #

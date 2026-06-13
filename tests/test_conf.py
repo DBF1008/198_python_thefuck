@@ -123,3 +123,108 @@ def test_get_user_dir_path(mocker, os_environ, settings, legacy_dir_exists,
 
     path = settings._get_user_dir_path().as_posix()
     assert path == os.path.expanduser(result)
+
+
+class TestSettingsSchema(object):
+    """``const.SETTINGS_SCHEMA`` is the single source of truth for every
+    setting. These invariants fail loudly if a future setting forgets to keep
+    its default / env var / coercion in sync -- the maintainability boundary."""
+
+    def test_defaults_derived_from_schema(self):
+        assert const.DEFAULT_SETTINGS == {
+            setting.attr: setting.default for setting in const.SETTINGS_SCHEMA}
+
+    def test_env_map_derived_from_schema(self):
+        assert const.ENV_TO_ATTR == {
+            setting.env: setting.attr
+            for setting in const.SETTINGS_SCHEMA if setting.env}
+
+    def test_lookup_derived_from_schema(self):
+        assert const.SETTING_BY_ATTR == {
+            setting.attr: setting for setting in const.SETTINGS_SCHEMA}
+
+    def test_env_settings_have_callable_coercion(self):
+        for setting in const.SETTINGS_SCHEMA:
+            if setting.env:
+                assert callable(setting.from_env), setting.attr
+            else:
+                # File-only settings (e.g. ``env``) are never parsed from a
+                # string, so they declare no coercion.
+                assert setting.from_env is None, setting.attr
+
+    def test_no_duplicate_attrs_or_env_vars(self):
+        attrs = [setting.attr for setting in const.SETTINGS_SCHEMA]
+        envs = [setting.env for setting in const.SETTINGS_SCHEMA if setting.env]
+        assert len(attrs) == len(set(attrs))
+        assert len(envs) == len(set(envs))
+
+    def test_every_env_var_has_a_default(self):
+        # An env var without a matching default would desync env from
+        # file/default loading -- exactly the bug the schema prevents.
+        for env, attr in const.ENV_TO_ATTR.items():
+            assert attr in const.DEFAULT_SETTINGS, env
+
+
+# (attr, env var, env-string, file value, expected coerced value). Each row is
+# the contract that the file and env sources must agree: both must yield the
+# same python value. ``repeat`` is intentionally excluded -- see its own test.
+SOURCE_EQUIVALENCE = [
+    ('require_confirmation', 'THEFUCK_REQUIRE_CONFIRMATION', 'false',
+     False, False),
+    ('wait_command', 'THEFUCK_WAIT_COMMAND', '55', 55, 55),
+    ('slow_commands', 'THEFUCK_SLOW_COMMANDS', 'lein:gradle',
+     ['lein', 'gradle'], ['lein', 'gradle']),
+    ('rules', 'THEFUCK_RULES', 'bash:lisp', ['bash', 'lisp'], ['bash', 'lisp']),
+    ('priority', 'THEFUCK_PRIORITY', 'vim=10:git=5',
+     {'vim': 10, 'git': 5}, {'vim': 10, 'git': 5}),
+]
+
+
+class TestSourceEquivalence(object):
+    """A value provided through the settings file and through the equivalent
+    environment variable must coerce to the same python value."""
+
+    @pytest.mark.parametrize('attr, env, env_str, file_val, expected',
+                             SOURCE_EQUIVALENCE)
+    def test_from_file(self, load_source, settings, attr, env, env_str,
+                       file_val, expected):
+        load_source.return_value = Mock(**{attr: file_val})
+        settings.init()
+        assert getattr(settings, attr) == expected
+
+    @pytest.mark.parametrize('attr, env, env_str, file_val, expected',
+                             SOURCE_EQUIVALENCE)
+    def test_from_env(self, load_source, os_environ, settings, attr, env,
+                      env_str, file_val, expected):
+        os_environ[env] = env_str
+        settings.init()
+        assert getattr(settings, attr) == expected
+
+
+@pytest.mark.usefixtures('load_source')
+def test_repeat_from_env_is_string_not_bool(os_environ, settings):
+    """``THEFUCK_REPEAT`` has always yielded the raw string: it is mapped in the
+    environment but was historically never coerced. The schema preserves this
+    so public config semantics don't change; the file and CLI args still give a
+    real bool (see ``test_repeat_from_file_is_bool``). Pinned so the quirk
+    cannot change silently."""
+    os_environ['THEFUCK_REPEAT'] = 'true'
+    settings.init()
+    assert settings.repeat == 'true'
+    assert settings.repeat is not True
+
+
+def test_repeat_from_file_is_bool(load_source, settings):
+    load_source.return_value = Mock(repeat=True)
+    settings.init()
+    assert settings.repeat is True
+
+
+@pytest.mark.usefixtures('load_source')
+def test_args_override_env(os_environ, settings):
+    """Args are applied after file and env in ``init``, so they win."""
+    os_environ.update({'THEFUCK_REQUIRE_CONFIRMATION': 'true',
+                       'THEFUCK_DEBUG': 'false'})
+    settings.init(Mock(yes=True, debug=True, repeat=False))
+    assert settings.require_confirmation is False  # args yes=True -> not yes
+    assert settings.debug is True                  # args win over env 'false'
