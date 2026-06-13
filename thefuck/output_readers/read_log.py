@@ -94,7 +94,16 @@ def get_output(script):
     try:
         with logs.debug_time(u'Read output from log'):
             fd = os.open(os.environ['THEFUCK_OUTPUT_LOG'], os.O_RDONLY)
-            buffer = mmap.mmap(fd, const.LOG_SIZE_IN_BYTES, mmap.MAP_SHARED, mmap.PROT_READ)
+            if os.fstat(fd).st_size == 0:
+                os.close(fd)
+                logs.warn("Output log is empty")
+                return None
+
+            # Map the whole file at its real size: the log is frequently
+            # smaller than ``LOG_SIZE_IN_BYTES``, and mmap'ing a length larger
+            # than the file fails. ``_skip_old_lines`` still trims everything
+            # but the last ``LOG_SIZE_IN_BYTES`` so the tail window is kept.
+            buffer = mmap.mmap(fd, 0, mmap.MAP_SHARED, mmap.PROT_READ)
             _skip_old_lines(buffer)
             lines = _get_output_lines(script, buffer)
             output = '\n'.join(lines).strip()
